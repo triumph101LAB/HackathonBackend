@@ -1,0 +1,25 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+env/
+node_modules/
+
+# History/backup files
+.history/
+
+# OS
+.DS_Store
+Thumbs.db
