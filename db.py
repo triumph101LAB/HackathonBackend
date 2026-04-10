@@ -1,15 +1,17 @@
 """
-PDI Database Layer — MongoDB
-Nurses log in with passwords. Patients are pre-seeded by admin.
+PDI Database Layer — MongoDB Atlas
 """
 
-import os, uuid, hashlib, hmac
+import os, uuid, hashlib, hmac, time
 from datetime import datetime, timezone
 from pymongo import MongoClient, ASCENDING
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, ServerSelectionTimeoutError
 
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME   = os.environ.get("MONGO_DB",  "pdi")
+MONGO_URI = os.environ.get("MONGO_URI", "")
+DB_NAME   = os.environ.get("MONGO_DB", "pdi")
+
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI not set — rename _env to .env or check your environment variables")
 
 _client = None
 _db     = None
@@ -18,7 +20,21 @@ _db     = None
 def get_db():
     global _client, _db
     if _db is None:
-        _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000)
+        if not MONGO_URI:
+            raise RuntimeError("MONGO_URI is not set — check your .env file")
+
+        _client = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=15000,   # 15s — Atlas needs time on cold start
+            connectTimeoutMS=15000,
+            socketTimeoutMS=30000,
+            retryWrites=True,
+        )
+
+        # Force a real connection immediately so we catch errors early
+        _client.admin.command("ping")
+        print(f"[db] Connected to MongoDB Atlas — database: {DB_NAME}")
+
         _db = _client[DB_NAME]
         _ensure_indexes(_db)
     return _db
@@ -28,7 +44,8 @@ def ping() -> bool:
     try:
         get_db().command("ping")
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[db] ping failed: {e}")
         return False
 
 
@@ -37,6 +54,7 @@ def _ensure_indexes(db):
     db.patients.create_index([("patient_id", ASCENDING)], unique=True)
     db.sessions.create_index([("token", ASCENDING)], unique=True)
     db.sessions.create_index([("nurse_id", ASCENDING)])
+    print("[db] Indexes ensured")
 
 
 # ── Password hashing ──────────────────────────────────────────────────────────
@@ -60,11 +78,9 @@ def _verify_password(password: str, stored: str) -> bool:
 # ── Nurse management ──────────────────────────────────────────────────────────
 
 def seed_nurses(nurses: list[dict]):
-    """
-    Seed initial nurse accounts. Each dict: { name, username, password, role }.
-    Safe to call on every startup — skips existing usernames.
-    """
+    """Seed nurse accounts. Safe to call every startup — skips existing."""
     db = get_db()
+    seeded = 0
     for n in nurses:
         try:
             db.nurses.insert_one({
@@ -76,14 +92,16 @@ def seed_nurses(nurses: list[dict]):
                 "role":           n.get("role", "nurse"),
                 "created_at":     datetime.now(timezone.utc).isoformat(),
             })
+            seeded += 1
         except DuplicateKeyError:
-            pass   # already exists
+            pass
+    if seeded:
+        print(f"[db] Seeded {seeded} new nurses")
+    else:
+        print(f"[db] Nurses already seeded ({db.nurses.count_documents({})} in DB)")
 
 
 def authenticate_nurse(username: str, password: str) -> dict | None:
-    """
-    Verify credentials. Returns nurse doc (without hash) or None.
-    """
     db = get_db()
     doc = db.nurses.find_one({"username_lower": username.strip().lower()}, {"_id": 0})
     if not doc:
@@ -95,18 +113,15 @@ def authenticate_nurse(username: str, password: str) -> dict | None:
 
 def get_nurse(nurse_id: str) -> dict | None:
     db = get_db()
-    doc = db.nurses.find_one({"nurse_id": nurse_id}, {"_id": 0, "password_hash": 0})
-    return doc
+    return db.nurses.find_one({"nurse_id": nurse_id}, {"_id": 0, "password_hash": 0})
 
 
 # ── Patient management ────────────────────────────────────────────────────────
 
 def seed_patients(patients: list[dict]):
-    """
-    Seed pre-defined patient records. Safe to call on startup.
-    Each dict: { patient_id, name, age, weight, ward, bed, diagnosis }
-    """
+    """Seed patient records. Safe to call every startup — skips existing."""
     db = get_db()
+    seeded = 0
     for p in patients:
         try:
             db.patients.insert_one({
@@ -118,14 +133,19 @@ def seed_patients(patients: list[dict]):
                 "bed":         p.get("bed", ""),
                 "diagnosis":   p.get("diagnosis", "Under observation"),
                 "admitted":    p.get("admitted", datetime.now(timezone.utc).isoformat()),
-                "vitals": { "hr":[], "rr":[], "spo2":[], "temp":[], "sbp":[], "dbp":[] },
+                "vitals":      {"hr":[], "rr":[], "spo2":[], "temp":[], "sbp":[], "dbp":[]},
                 "times":       [],
                 "notes":       [],
                 "ai_weight":   0.0,
                 "created_at":  datetime.now(timezone.utc).isoformat(),
             })
+            seeded += 1
         except DuplicateKeyError:
-            pass   # already seeded
+            pass
+    if seeded:
+        print(f"[db] Seeded {seeded} new patients")
+    else:
+        print(f"[db] Patients already seeded ({db.patients.count_documents({})} in DB)")
 
 
 def get_patient(patient_id: str) -> dict | None:
@@ -169,7 +189,7 @@ def list_patients_summary() -> list:
     ))
 
 
-# ── Sessions (nurse sessions) ─────────────────────────────────────────────────
+# ── Sessions ──────────────────────────────────────────────────────────────────
 
 def create_session(nurse_id: str) -> str:
     token = str(uuid.uuid4())

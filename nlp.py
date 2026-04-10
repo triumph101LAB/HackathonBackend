@@ -8,7 +8,7 @@ import json, os
 import anthropic
 from anthropic import RateLimitError, APIError
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 # ── UMLS concept clusters used for clinical language grounding ────────────────

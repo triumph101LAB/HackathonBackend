@@ -5,7 +5,7 @@ PDI Flask API — Nurse authentication, pre-seeded patients, UMLS note generatio
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 from engine import run_full_assessment, THRESHOLDS
 from nlp import generate_nursing_note, analyze_nursing_note
 

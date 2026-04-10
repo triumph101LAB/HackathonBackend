@@ -3,3 +3,6 @@ flask-cors>=4.0.0
 anthropic>=0.40.0
 pymongo>=4.6.0
 python-dotenv>=1.0.0
+dnspython>=2.4.0
+gunicorn>=21.2.0
+ 
