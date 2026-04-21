@@ -1,31 +1,41 @@
 name: Keep Backend Alive
 
-# Runs every minute — prevents Render free tier cold starts (spins down after ~50s)
 on:
   schedule:
-    - cron: "* * * * *"   # Every minute, 24/7
-  workflow_dispatch:       # Also allows manual trigger from GitHub UI
+    - cron: "* * * * *"
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 2
 
     steps:
       - name: Ping PDI Backend
         run: |
-          echo "Pinging backend at ${{ secrets.RENDER_BACKEND_URL }}/health"
+          URL="${{ secrets.RENDER_BACKEND_URL }}/health"
+          echo "Pinging: $URL"
+
+          # Try up to 3 times with 20s between retries
+          # --max-time 55: wait up to 55s per attempt (covers full cold start)
+          # --retry 3: curl-level retries on connection failure
+          # --retry-delay 10: wait 10s between curl retries
+          # || true: never let curl exit code fail the workflow
 
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time 55 \
-            "${{ secrets.RENDER_BACKEND_URL }}/health")
+            --retry 3 \
+            --retry-delay 10 \
+            --retry-all-errors \
+            "$URL") || true
 
-          echo "Response code: $RESPONSE"
+          echo "Response: $RESPONSE"
 
           if [ "$RESPONSE" = "200" ]; then
-            echo "✓ Backend is alive"
+            echo "✓ Backend alive"
           else
-            echo "✗ Backend returned $RESPONSE — may be starting up"
-            # Don't fail the workflow — cold starts return non-200 initially
-            exit 0
+            echo "⚠ Got $RESPONSE — backend may be waking up, next ping will confirm"
           fi
+
+          # Always exit 0 — never fail this workflow
+          exit 0
